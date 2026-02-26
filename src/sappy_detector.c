@@ -115,7 +115,7 @@ static uint32_t gba_address_to_offset(uint32_t address)
 	{
 		fprintf(stderr, "Warning: the address $%08X is not a valid ROM address.\n", address);
 	}
-	return address & 0x01FFFFFF;
+	return address & 0x03FFFFFF;
 }
 
 /* Thanks to loveeemu for this routine, more accurate than mine ! Slightly adapted. */

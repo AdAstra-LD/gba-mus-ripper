@@ -19,5 +19,6 @@ static std::string hex(const uint32_t n)
 		s += "0123456789abcdef"[0xf & (n >> (4 * i))];
 	}
 	// Remove leading zeroes
-	return s.substr(s.find_first_not_of('0'));
+	size_t pos = s.find_first_not_of('0');
+	return pos != std::string::npos ? s.substr(pos) : "0";
 }

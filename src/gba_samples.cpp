@@ -33,7 +33,7 @@ int GBASamples::build_sample(uint32_t pointer)
 		uint32_t len;
 	}
 	hdr;
-	fread(&hdr, 4, 4, inGBA);
+	if (fread(&hdr, 4, 4, inGBA) != 4) throw -1;
 
 	//Now we should make sure the data is coherent, and reject
 	//the samples if errors are suspected
@@ -196,7 +196,8 @@ int GBASamples::build_noise_sample(bool metallic, int key)
 {
 	//prevent out of range keys
 	if (key < 42) key = 42;
-	if (key > 77) key = 76;
+	if (metallic && key > 79) key = 79;
+	else if (!metallic && key > 80) key = 80;
 
 	unsigned int num = metallic ? 3 + (key-42) : 80 + (key-42);
 

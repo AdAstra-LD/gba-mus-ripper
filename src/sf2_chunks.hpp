@@ -73,7 +73,8 @@ protected:
 	// Write the name and size of the (sub)chunk (should be systematically called by sub-classes)
 	inline void write()
 	{
-		fwrite(&name, 2, 4, sf2->out);
+		fwrite(name, 1, 4, sf2->out);
+		fwrite(&size, 4, 1, sf2->out);
 	}
 };
 
@@ -98,6 +99,7 @@ public:
 		wPreset(patch), wBank(bank), sf2(sf2)
 	{
 		strncpy(ach_preset_name, name, 20);
+		ach_preset_name[19] = '\0';
 		wPresetBagNdx = sf2->get_pbag_size();
 	}
 
@@ -198,6 +200,7 @@ public:
 	sfInst(SF2 *sf2, const char *name) : sf2(sf2)
 	{
 		strncpy(achInstName, name, 20);
+		achInstName[19] = '\0';
 		wInstBagNdx = sf2->get_ibag_size();
 	}
 
@@ -234,6 +237,7 @@ public:
 		sf2(sf2)
 	{
 		strncpy(achSampleName, name, 20);
+		achSampleName[19] = '\0';
 	}
 
 	void write()
@@ -343,100 +347,112 @@ public:
 			// Using a cached buffer really speeds up the writing process a lot !!
 			int16_t *outbuf = new int16_t[size_list[i]];
 
-			switch (sample_type_list[i])
-			{
+			switch ( sample_type_list[i] ) {
 				// Source is unsigned 8 bits
 				case UNSIGNED_8:
-				{
-					uint8_t *data = new uint8_t[size_list[i]];
-					fread(data, 1, size_list[i], file_list[i]);
-					// Convert to signed 16 bits
-					for (unsigned int j=0; j < size_list[i]; j++)
-						outbuf[j] = (data[j] - 0x80) << 8;
-					delete[] data;
-				}	break;
+					{
+						uint8_t* data = new uint8_t[size_list[i]];
+						if ( fread( data, 1, size_list[i], file_list[i] ) != size_list[i] ) {
+							fprintf( stderr, "Warning: Failed to read sample data (UNSIGNED_8). Filling with silence.\n" );
+							memset( outbuf, 0, size_list[i] * 2 );
+						} else {
+							// Convert to signed 16 bits
+							for ( unsigned int j = 0; j < size_list[i]; j++ )
+								outbuf[j] = ( data[j] - 0x80 ) << 8;
+						}
+						delete[] data;
+					}	break;
 
-				// Source is signed 8 bits
+					// Source is signed 8 bits
 				case SIGNED_8:
-				{
-					int8_t *data = new int8_t[size_list[i]];
-					fread(data, 1, size_list[i], file_list[i]);
-
-					for (unsigned int j=0; j < size_list[i]; j++)
-						outbuf[j] = data[j] << 8;
-					delete[] data;
-				}	break;
+					{
+						int8_t* data = new int8_t[size_list[i]];
+						if ( fread( data, 1, size_list[i], file_list[i] ) != size_list[i] ) {
+							fprintf( stderr, "Warning: Failed to read sample data (SIGNED_8). Filling with silence.\n" );
+							memset( outbuf, 0, size_list[i] * 2 );
+						} else {
+							for ( unsigned int j = 0; j < size_list[i]; j++ )
+								outbuf[j] = data[j] << 8;
+						}
+						delete[] data;
+					}	break;
 
 				case SIGNED_16:
 					// Just read raw data, no conversion needed
-					fread(outbuf, 2, size_list[i], file_list[i]);
+					if ( fread( outbuf, 2, size_list[i], file_list[i] ) != size_list[i] ) {
+						fprintf( stderr, "Warning: Failed to read sample data (SIGNED_16). Filling with silence.\n" );
+						memset( outbuf, 0, size_list[i] * 2 );
+					}
 					break;
 
 				case GAMEBOY_CH3:
-				{
-					// Conversion lookup table
-					const int16_t conv_tbl[] =
 					{
-						-0x4000, -0x3800, -0x3000, -0x2800, -0x2000, -0x1800, -0x0100, -0x0800,
-						0x0000, 0x0800, 0x1000, 0x1800, 0x2000, 0x2800, 0x3000, 0x3800
-					};
+						uint8_t data[16];
+						// Conversion lookup table
+						const int16_t conv_tbl[] =
+						{
+							-0x4000, -0x3800, -0x3000, -0x2800, -0x2000, -0x1800, -0x0100, -0x0800,
+							0x0000, 0x0800, 0x1000, 0x1800, 0x2000, 0x2800, 0x3000, 0x3800
+						};
+						if ( fread( data, 1, 16, file_list[i] ) != 16 ) {
+							fprintf( stderr, "Warning: Failed to read sample data (GAMEBOY_CH3). Filling with silence.\n" );
+							memset( outbuf, 0, size_list[i] * 2 );
+						} else {
+							int num_of_repts = size_list[i] / 32;
+							// Data is always on 16 bytes
 
-					int num_of_repts = size_list[i]/32;
-					// Data is always on 16 bytes
-					uint8_t data[16];
-					fread(data, 1, 16, file_list[i]);
+							for ( int j = 0, l = 0; j < 16; j++ ) {
+								for ( int k = num_of_repts; k != 0; k--, l++ )
+									outbuf[l] = conv_tbl[data[j] >> 4];
 
-					for (int j=0, l=0; j<16; j++)
-					{
-						for (int k=num_of_repts; k!=0; k--, l++)
-							outbuf[l] = conv_tbl[data[j]>>4];
-
-						for (int k=num_of_repts; k!=0; k--, l++)
-							outbuf[l] = conv_tbl[data[j]&0xf];
-					}
-				}	break;
+								for ( int k = num_of_repts; k != 0; k--, l++ )
+									outbuf[l] = conv_tbl[data[j] & 0xf];
+							}
+						}
+					}	break;
 
 				case BDPCM:
-				{
-					static const int8_t delta_lut[] = {0, 1, 4, 9, 16, 25, 36, 49, -64, -49, -36, -25, -16, -9, -4, -1};
-
-					/*
-					 * A block consists of an initial signed 8 bit PCM byte
-					 * followed by 63 nibbles stored in 32 bytes.
-					 * The first of these bytes has a zero padded (unused) high nibble.
-					 * This makes up of a total block size of 65 (0x21) bytes each.
-					 *
-					 * Decoding works like this:
-					 * The initial byte can be directly read without decoding. Then each
-					 * next sample can be decoded by putting the nibble into the delta-lookup-table
-					 * and adding that value to the previously calculated sample
-					 * until the end of the block is reached.
-					 */
-
-					unsigned int nblocks = size_list[i] / 64;		// 64 samples per block
-
-					char (*data)[33] = new char[nblocks][33];
-					fread(data, 33, nblocks, file_list[i]);
-
-					for (unsigned int block=0; block < nblocks; ++block)
 					{
-						int8_t sample = data[block][0];
-						outbuf[64*block] = sample << 8;
-						sample += delta_lut[data[block][1] & 0xf];
-						outbuf[64*block+1] = sample << 8;
-						for (unsigned int j = 1; j < 32; ++j)
-						{
-							uint8_t d = data[block][j+1];
-							sample += delta_lut[d >> 4];
-							outbuf[64*block+2*j] = sample << 8;
-							sample += delta_lut[d & 0xf];
-							outbuf[64*block+2*j+1]= sample << 8;
-						}
-					}
-					memset(outbuf+64*nblocks, 0, size_list[i]-64*nblocks);		// Remaining samples are always 0
+						static const int8_t delta_lut[] = { 0, 1, 4, 9, 16, 25, 36, 49, -64, -49, -36, -25, -16, -9, -4, -1 };
 
-					delete[] data;
-				}   break;
+						/*
+						 * A block consists of an initial signed 8 bit PCM byte
+						 * followed by 63 nibbles stored in 32 bytes.
+						 * The first of these bytes has a zero padded (unused) high nibble.
+						 * This makes up of a total block size of 65 (0x21) bytes each.
+						 *
+						 * Decoding works like this:
+						 * The initial byte can be directly read without decoding. Then each
+						 * next sample can be decoded by putting the nibble into the delta-lookup-table
+						 * and adding that value to the previously calculated sample
+						 * until the end of the block is reached.
+						 */
+
+						unsigned int nblocks = size_list[i] / 64;		// 64 samples per block
+
+						char ( *data )[33] = new char[nblocks][33];
+						if ( fread( data, 33, nblocks, file_list[i] ) != nblocks ) {
+							fprintf( stderr, "Warning: Failed to read sample data (BDPCM). Filling with silence.\n" );
+							memset( outbuf, 0, size_list[i] * 2 );
+						} else {
+							for ( unsigned int block = 0; block < nblocks; ++block ) {
+								int8_t sample = data[block][0];
+								outbuf[64 * block] = sample << 8;
+								sample += delta_lut[data[block][1] & 0xf];
+								outbuf[64 * block + 1] = sample << 8;
+								for ( unsigned int j = 1; j < 32; ++j ) {
+									uint8_t d = data[block][j + 1];
+									sample += delta_lut[d >> 4];
+									outbuf[64 * block + 2 * j] = sample << 8;
+									sample += delta_lut[d & 0xf];
+									outbuf[64 * block + 2 * j + 1] = sample << 8;
+								}
+							}
+							memset( outbuf + 64 * nblocks, 0, ( size_list[i] - 64 * nblocks ) * 2 );		// Remaining samples are always 0
+						}
+						delete[] data;
+					}
+					break;
 			}
 
 			// Write buffer

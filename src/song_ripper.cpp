@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 
 class Note;
 
@@ -189,6 +190,7 @@ static bool tick(int track_amnt)
 		counter[track]--;
 		// Process events until counter non-null or pointer null
 		// This might not be executed if counter both are non null.
+		int safety_loop_count = 0;
 		while (track_ptr[track] != 0 && !end_flag && counter[track] <= 0)
 		{
 			// Check if we're at loop start point
@@ -196,6 +198,12 @@ static bool tick(int track_amnt)
 				midi.add_marker("loopStart");
 
 			process_event(track);
+			if (++safety_loop_count > 10000) {
+				fprintf(stderr, "Error: Infinite loop detected in track %d (10000 events with 0 duration).\n", track);
+				track_ptr[track] = 0;
+				track_completed[track] = true;
+				break;
+			}
 		}
 	}
 
@@ -224,7 +232,11 @@ static bool tick(int track_amnt)
 static uint32_t get_GBA_pointer()
 {
 	uint32_t p;
-	fread(&p, 1, 4, inGBA);
+	if (fread(&p, 4, 1, inGBA) != 1)
+	{
+		fprintf(stderr, "Error: Unexpected end of file or read error in song data.\n");
+		exit(-1);
+	}
 	return p & 0x3FFFFFF;
 }
 
@@ -239,12 +251,27 @@ static void process_event(int track)
 		80, 84, 88, 90, 92, 96
 	};
 
-	fseek(inGBA, track_ptr[track], SEEK_SET);
+	if (fseek(inGBA, track_ptr[track], SEEK_SET) != 0)
+	{
+		fprintf(stderr, "Error: Seek failed at track %d offset 0x%x\n", track, track_ptr[track]);
+		track_ptr[track] = 0;
+		track_completed[track] = true;
+		return;
+	}
+
 	// Read command
-	uint8_t command = fgetc(inGBA);
+	int c = fgetc(inGBA);
+	if (c == EOF)
+	{
+		fprintf(stderr, "Error: Unexpected EOF at track %d offset 0x%x\n", track, track_ptr[track]);
+		track_ptr[track] = 0;
+		track_completed[track] = true;
+		return;
+	}
+	uint8_t command = (uint8_t)c;
 
 	track_ptr[track]++;
-	uint8_t arg1;
+	uint8_t arg1 = 0;
 	// Repeat last command, the byte read was in fact the first argument
 	if (command < 0x80)
 	{
@@ -534,7 +561,7 @@ static void process_event(int track)
 	}
 }
 
-static uint32_t parseArguments(const int argv, const char *const args[])
+static uint32_t parse_args(const int argv, const char *const args[])
 {
 	if (argv < 3) print_instructions();
 
@@ -576,117 +603,130 @@ static uint32_t parseArguments(const int argv, const char *const args[])
 	return strtoul(args[2], 0, 0);
 }
 
-int main(int argc, char *argv[])
+int main(int argc, char *const argv[])
 {
-	FILE *outMID;
-	puts("GBA ROM sequence ripper (c) 2012 Bregalad");
-	uint32_t base_address = parseArguments(argc - 1, argv + 1);
+	try {
+		// Parse arguments (without program name)
+		uint32_t song_pos = parse_args(argc - 1, argv + 1);
 
-	if (fseek(inGBA, base_address, SEEK_SET))
-	{
-		fprintf(stderr, "Can't seek to the base address 0x%x.\n", base_address);
-		exit(0);
-	}
-
-	int track_amnt = fgetc(inGBA);
-	if (track_amnt < 1 || track_amnt > 16)
-	{
-		fprintf(stderr, "Invalid amount of tracks %d! (must be 1-16).\n", track_amnt);
-		exit(0);
-	}
-	printf("%u tracks.\n", track_amnt);
-
-	// Open output file once we know the pointer points to correct data
-	//(this avoids creating blank files when there is an error)
-	outMID = fopen(argv[2], "wb");
-	if (!outMID)
-	{
-		fprintf(stderr, "Can't write to file %s.\n", argv[2]);
-		exit(0);
-	}
-
-	printf("Converting...");
-
-	if (rc)
-	{	// Make the drum channel last in the list, hopefully reducing the risk of it being used
-		midi.chn_reorder[9] = 15;
-		for (unsigned int j = 10; j < 16; ++j)
-			midi.chn_reorder[j] = j-1;
-	}
-
-	if (gs)
-	{	// GS reset
-		const char gs_reset_sysex[] = {0x41, 0x10, 0x42, 0x12, 0x40, 0x00, 0x7f, 0x00, 0x41};
-		midi.add_sysex(gs_reset_sysex, sizeof(gs_reset_sysex));
-		// Part 10 to normal
-		const char part_10_normal_sysex[] = {0x41, 0x10, 0x42, 0x12, 0x40, 0x10, 0x15, 0x00, 0x1b};
-		midi.add_sysex(part_10_normal_sysex, sizeof(part_10_normal_sysex));
-	}
-
-	if (xg)
-	{	// XG reset
-		const char xg_sysex[] = {0x43, 0x10, 0x4C, 0x00, 0x00, 0x7E, 0x00};
-		midi.add_sysex(xg_sysex, sizeof xg_sysex);
-	}
-
-	midi.add_marker("Converted by SequenceRipper 2.0");
-
-	fgetc(inGBA);						// Unknown byte
-	fgetc(inGBA);						// Priority
-	int8_t reverb = fgetc(inGBA);		// Reverb
-
-	int instr_bank_address = get_GBA_pointer();
-
-	// Read table of pointers
-	for (int i = 0; i < track_amnt; i++)
-	{
-		track_ptr[i] = get_GBA_pointer();
-
-		lfo_depth[i] = 0;
-		lfo_delay[i] = 0;
-		lfo_flag[i] = false;
-
-		if (reverb < 0)  // add reverb controller on all tracks
-			midi.add_controller(i, 91, lv ? (int)sqrt((reverb & 0x7f) * 127.0) : reverb & 0x7f);
-	}
-
-	// Search for loop address of track #0
-	if (track_amnt > 1)	// If 2 or more track, end of track is before start of track 2
-		fseek(inGBA, track_ptr[1] - 9, SEEK_SET);
-	else
-		// If only a single track, the end is before start of header data
-		fseek(inGBA, base_address - 9, SEEK_SET);
-
-	// Read where in track 1 the loop starts
-	for (int i = 0; i < 5; i++)
-		if (fgetc(inGBA) == 0xb2)
-		{
-			loop_flag = true;
-			loop_adr = get_GBA_pointer();
-			break;
+		if (fseek(inGBA, song_pos, SEEK_SET)) {
+			fprintf(stderr, "Error seeking to song pos\n");
+			exit(-1);
 		}
 
-	// This is the main loop which will process all channels
-	// until they are all inactive
-	int i = 100000;
-	while (tick(track_amnt))
-	{
-		if (i-- == 0)
-		{	// Security thing to avoid infinite loop in case things goes wrong
-			puts("Time out!");
-			break;
+		int track_amnt = fgetc(inGBA);
+		printf("%d tracks.\n", track_amnt);
+		if (track_amnt > 16) {
+			fprintf(stderr, "Too many tracks! (Max 16)\n");
+			track_amnt = 16;
 		}
+
+		// Initialize MIDI features based on flags
+		if (rc)
+		{	// Make the drum channel last in the list
+			midi.chn_reorder[9] = 15;
+			for (unsigned int j = 10; j < 16; ++j)
+				midi.chn_reorder[j] = j-1;
+		}
+
+		if (gs)
+		{	// GS reset
+			const char gs_reset_sysex[] = {0x41, 0x10, 0x42, 0x12, 0x40, 0x00, 0x7f, 0x00, 0x41};
+			midi.add_sysex(gs_reset_sysex, sizeof(gs_reset_sysex));
+			// Part 10 to normal
+			const char part_10_normal_sysex[] = {0x41, 0x10, 0x42, 0x12, 0x40, 0x10, 0x15, 0x00, 0x1b};
+			midi.add_sysex(part_10_normal_sysex, sizeof(part_10_normal_sysex));
+		}
+
+		if (xg)
+		{	// XG reset
+			const char xg_sysex[] = {0x43, 0x10, 0x4C, 0x00, 0x00, 0x7E, 0x00};
+			midi.add_sysex(xg_sysex, sizeof(xg_sysex));
+		}
+
+		midi.add_marker("Converted by SequenceRipper 2.0");
+
+		fgetc(inGBA);						// Unknown byte
+		fgetc(inGBA);						// Priority
+		int8_t reverb = fgetc(inGBA);		// Reverb
+
+		uint32_t instr_bank_address;
+		if (fread(&instr_bank_address, 4, 1, inGBA) != 1) {
+			fprintf(stderr, "Error reading instrument bank address\n");
+			exit(-1);
+		}
+		instr_bank_address &= 0x3FFFFFF;
+
+		// Read track pointers
+		for (int i=0; i<track_amnt; i++) {
+			uint32_t trk_ptr;
+			if (fread(&trk_ptr, 4, 1, inGBA) != 1) {
+				fprintf(stderr, "Error reading track pointer %d\n", i);
+				exit(-1);
+			}
+			track_ptr[i] = trk_ptr & 0x3FFFFFF;
+			counter[i] = 0;
+			track_completed[i] = false;
+			
+			lfo_depth[i] = 0;
+			lfo_delay[i] = 0;
+			lfo_flag[i] = false;
+
+			if (reverb < 0)  // add reverb controller on all tracks
+				midi.add_controller(i, 91, lv ? (int)sqrt((reverb & 0x7f) * 127.0) : reverb & 0x7f);
+		}
+
+		// Search for loop address of track #0
+		if ( track_amnt > 1 )	// If 2 or more track, end of track is before start of track 2
+			fseek( inGBA, track_ptr[1] - 9, SEEK_SET );
+		else
+			// If only a single track, the end is before start of header data
+			fseek( inGBA, song_pos - 9, SEEK_SET );
+
+		// Read where in track 1 the loop starts
+		for ( int i = 0; i < 5; i++ ) {
+			int c = fgetc( inGBA );
+			if ( c == 0xb2 ) {
+				loop_flag = true;
+				loop_adr = get_GBA_pointer();
+				break;
+			}
+		}
+
+		puts( "Converting..." );
+		// Main loop
+		int tick_timeout = 100000;
+		while ( tick( track_amnt ) ) {
+			if ( tick_timeout-- == 0 ) {
+				// Security thing to avoid infinite loop in case things goes wrong
+				puts( "Time out!" );
+				break;
+			}
+		}
+
+		// If a loop was detected this is its end
+		if (loop_flag) midi.add_marker("loopEnd");
+
+		printf("Maximum simultaneous notes: %d\n", simultaneous_notes_max);
+
+		puts("Dump complete. Now outputting MIDI file...");
+		FILE *out = fopen(argv[2], "wb");
+		if (!out) {
+			fprintf(stderr, "Can't open output file %s\n", argv[2]);
+			exit(-1);
+		}
+		midi.write(out);
+
+		fclose(inGBA);
+		puts(" Done!");
+		return 0;
 	}
-
-	// If a loop was detected this is its end
-	if (loop_flag) midi.add_marker("loopEnd");
-
-	printf(" Maximum simultaneous notes: %d\n", simultaneous_notes_max);
-
-	printf("Dump complete. Now outputting MIDI file...");
-	midi.write(outMID);
-	// Close files
-	fclose(inGBA);
-	puts(" Done!\n");
-	return instr_bank_address;
+	catch (int e) {
+		fprintf(stderr, "Error: An exception occurred (code %d).\n", e);
+		return -1;
+	}
+	catch (...) {
+		fprintf(stderr, "Error: An unknown exception occurred.\n");
+		return -1;
+	}
 }

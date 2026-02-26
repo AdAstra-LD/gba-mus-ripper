@@ -198,13 +198,13 @@ static void build_instrument(const inst_data inst)
 static void print(const std::string& s)
 {
 	if (verbose_flag)
-		fprintf(out_txt, s.c_str());
+		fputs(s.c_str(), out_txt);
 }
 
 static void print(const char* s)
 {
 	if (verbose_flag)
-		fprintf(out_txt, s);
+		fputs(s, out_txt);
 }
 
 // Display ADSR values used
@@ -260,7 +260,7 @@ static void verbose_instrument(const inst_data inst, bool recursive)
 					uint32_t len;
 				}
 				ins;
-				fread(&ins, 4, 4, inGBA);
+				if (fread(&ins, 4, 4, inGBA) != 4) throw -1;
 
 				fprintf(out_txt, "      Pitch: %u\n", ins.pitch/1024);
 				fprintf(out_txt, "      Length: %u\n", ins.len);
@@ -389,7 +389,7 @@ static void verbose_instrument(const inst_data inst, bool recursive)
 								if (fseek(inGBA, instr_table + 12*k, SEEK_SET)) throw -1;
 								inst_data sub_instr;
 								// Read the addressed instrument
-								fread(&sub_instr, 4, 3, inGBA);
+								if (fread(&sub_instr, 4, 3, inGBA) != 3) throw -1;
 
 								fprintf(out_txt, "\n      Sub_intrument %d", k);
 								verbose_instrument(sub_instr, true);
@@ -422,7 +422,7 @@ static void verbose_instrument(const inst_data inst, bool recursive)
 					{
 						if (fseek(inGBA, address + k*12, SEEK_SET)) throw -1;
 						inst_data key_instr;
-						fread(&key_instr, 4, 3, inGBA);
+						if (fread(&key_instr, 4, 3, inGBA) != 3) throw -1;
 
 						fprintf(out_txt, "\n   Key %d", k);
 						verbose_instrument(key_instr, true);
@@ -567,6 +567,7 @@ int main(const int argc, char *const argv[])
 	// Parse arguments without the program name
 	parse_arguments(argc-1, argv+1);
 
+	try {
 	// Compute prefix (path) of this program's name
 	std::string prg_name = argv[0];
 	std::string prg_prefix = prg_name.substr(0, prg_name.find("sound_font_ripper"));
@@ -595,12 +596,15 @@ int main(const int argc, char *const argv[])
 		current_address = *it;
 		std::set<uint32_t>::iterator next_it = it;
 		++next_it;
-		uint32_t next_address = *next_it;
 
 		// Limit the # of presets if the addresses overlaps
 		unsigned int ninstr = 128;
-		if (addresses.end() != next_it && (next_address - current_address)/12 < 128)
-			ninstr = (next_address - current_address)/12;
+		if (next_it != addresses.end())
+		{
+			uint32_t next_address = *next_it;
+			if ((next_address - current_address)/12 < 128)
+				ninstr = (next_address - current_address)/12;
+		}
 
 		// Seek at the start of the sound bank
 		if (fseek(inGBA, current_address, SEEK_SET) != 0
@@ -653,4 +657,13 @@ int main(const int argc, char *const argv[])
 
 	puts(" Done!\n");
 	return 0;
+	}
+	catch (int e) {
+		fprintf(stderr, "Error: An exception occurred (code %d).\n", e);
+		return -1;
+	}
+	catch (...) {
+		fprintf(stderr, "Error: An unknown exception occurred.\n");
+		return -1;
+	}
 }

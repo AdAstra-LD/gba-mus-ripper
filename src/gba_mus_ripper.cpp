@@ -57,8 +57,12 @@ static void print_instructions()
 static uint32_t get_GBA_pointer()
 {
 	uint32_t p;
-	fread(&p, 4, 1, inGBA);
-	return p - 0x8000000;
+	if (fread(&p, 4, 1, inGBA) != 1)
+	{
+		fprintf(stderr, "Error: Unexpected end of file or read error.\n");
+		exit(-1);
+	}
+	return p & 0x3FFFFFF;
 }
 
 static void mkdir(std::string name)
@@ -159,6 +163,7 @@ static void parse_args(const int argc, char *const args[])
 
 int main(int argc, char *const argv[])
 {
+	try {
 	// Parse arguments (without program name)
 	parse_args(argc - 1, argv + 1);
 
@@ -175,7 +180,6 @@ int main(int argc, char *const argv[])
 #ifdef WIN32
 		// On windows, just use the 32-bit return code of the sappy_detector executable
 		std::string sappy_detector_cmd = prg_prefix + "sappy_detector \"" + inGBA_path + "\"";
-        printf("DEBUG: Going to call system(%s)\n", sappy_detector_cmd.c_str());
 		int sound_engine_adr = std::system(sappy_detector_cmd.c_str());
 #else
 		// On linux the function is duplicated in this executable
@@ -194,7 +198,11 @@ int main(int argc, char *const argv[])
 
 		// Engine parameter's word
 		uint32_t parameter_word;
-		fread(&parameter_word, 4, 1, inGBA);
+		if (fread(&parameter_word, 4, 1, inGBA) != 1)
+		{
+			fprintf(stderr, "Error: Failed to read parameter word.\n");
+			exit(-1);
+		}
 
 		// Get sampling rate
 		sample_rate = sample_rates[(parameter_word >> 16) & 0xf];
@@ -202,7 +210,11 @@ int main(int argc, char *const argv[])
 
 		// Compute address of song table
 		uint32_t song_levels;			// Read # of song levels
-		fread(&song_levels, 4, 1, inGBA);
+		if (fread(&song_levels, 4, 1, inGBA) != 1)
+		{
+			fprintf(stderr, "Error: Failed to read song levels.\n");
+			exit(-1);
+		}
 		printf("# of song levels: %d\n", song_levels);
 		song_tbl_ptr = get_GBA_pointer() + 12 * song_levels;
 	}
@@ -237,7 +249,7 @@ int main(int argc, char *const argv[])
 	uint32_t song_pointer;
 	while (true)
 	{
-		fread(&song_pointer, 4, 1, inGBA);
+		if (fread(&song_pointer, 4, 1, inGBA) != 1) break;
 		if (song_pointer != 0) break;
 		song_tbl_ptr += 4;
 	}
@@ -245,7 +257,7 @@ int main(int argc, char *const argv[])
 	unsigned int i = 0;
 	while (true)
 	{
-		song_pointer -= 0x8000000;		// Adjust pointer
+		song_pointer &= 0x3FFFFFF;		// Adjust pointer
 
 		// Stop as soon as we met with an invalid pointer
 		if (song_pointer == 0 || song_pointer >= inGBA_size) break;
@@ -253,7 +265,7 @@ int main(int argc, char *const argv[])
 		for (int j = 4; j != 0; --j) fgetc(inGBA);		// Discard 4 bytes (sound group)
 		song_list.push_back(song_pointer);			// Add pointer to list
 		i++;
-		fread(&song_pointer, 4, 1, inGBA);
+		if (fread(&song_pointer, 4, 1, inGBA) != 1) break;
 	};
 	// As soon as data that is not a valid pointer is found, the song table is terminated
 
@@ -317,8 +329,7 @@ int main(int argc, char *const argv[])
 
 			printf("Song %u\n", i);
 
-			printf("DEBUG: Going to call system(%s)\n", seq_rip_cmd.c_str());
-			if (!system(seq_rip_cmd.c_str())) puts("An error occurred while calling song_ripper.");
+			if (system(seq_rip_cmd.c_str())) puts("An error occurred while calling song_ripper.");
 		}
 	}
 	delete[] sound_bank_index_list;
@@ -340,7 +351,6 @@ int main(int argc, char *const argv[])
 			if (gm) sf_rip_args += " -gm";
 			sf_rip_args += " 0x" + hex(*j);
 
-            printf("DEBUG: Goint to call system(%s)\n", sf_rip_args.c_str());
 			system(sf_rip_args.c_str());
 		}
 	}
@@ -360,10 +370,18 @@ int main(int argc, char *const argv[])
 			sf_rip_args += " 0x" + hex(*j);
 
 		// Call sound font ripper
-        printf("DEBUG: Going to call system(%s)\n", sf_rip_args.c_str());
 		system(sf_rip_args.c_str());
 	}
 
 	puts("Rip completed!");
 	return 0;
+	}
+	catch (int e) {
+		fprintf(stderr, "Error: An exception occurred (code %d).\n", e);
+		return -1;
+	}
+	catch (...) {
+		fprintf(stderr, "Error: An unknown exception occurred.\n");
+		return -1;
+	}
 }

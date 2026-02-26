@@ -23,7 +23,7 @@ bool operator <(const inst_data&i, const inst_data& j)
 uint32_t GBAInstr::get_GBA_pointer()
 {
 	uint32_t p;
-	fread(&p, 4, 1, inGBA);
+	if (fread(&p, 4, 1, inGBA) != 1) throw -1;
 	return p & 0x3FFFFFF;
 }
 
@@ -185,10 +185,10 @@ int GBAInstr::build_every_keysplit_instrument(const inst_data inst)
 			bool no_scale = false;
 
 			uint32_t main_word, adsr;
-			fread(&main_word, 4, 1, inGBA);
+			if (fread(&main_word, 4, 1, inGBA) != 1) throw -1;
 
 			// Get ADSR envelope
-			fread(&adsr, 4, 1, inGBA);
+			if (fread(&adsr, 4, 1, inGBA) != 1) throw -1;
 
 			int sample_index;
 			bool loop_flag = true;
@@ -205,7 +205,7 @@ int GBAInstr::build_every_keysplit_instrument(const inst_data inst)
 					loop_flag = fgetc(inGBA) == 0x40;
 
 					uint32_t pitch;
-					fread(&pitch, 4, 1, inGBA);
+					if (fread(&pitch, 4, 1, inGBA) != 1) throw -1;
 
 					// Build pointed sample
 					sample_index = samples.build_sample(sample_pointer);
@@ -324,12 +324,12 @@ int GBAInstr::build_keysplit_instrument(const inst_data inst)
 
 			// Get sample pointer
 			uint32_t sample_pointer;
-			fread(&sample_pointer, 1, 4, inGBA);
+			if ( fread( &sample_pointer, 1, 4, inGBA ) != 4 ) throw - 1;
 			sample_pointer &= 0x3ffffff;
 
 			// Get ADSR envelope
 			uint32_t adsr;
-			fread(&adsr, 4, 1, inGBA);
+			if ( fread( &adsr, 4, 1, inGBA ) != 1 ) throw - 1;
 
 			// For now GameBoy instruments aren't supported
 			// (I wonder if any game ever used this)

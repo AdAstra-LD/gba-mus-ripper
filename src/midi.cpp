@@ -40,6 +40,7 @@ MIDI::MIDI(uint16_t delta_time)
 		chn_reorder[i] = i;
 	}
 	last_chanel = -1;
+	last_event_type = (MIDIEventType)-1;
 	time_ctr = 0;
 }
 
@@ -73,7 +74,11 @@ void MIDI::write(FILE *out)
 		0x0100,
 		(delta_time_per_beat << 8) | (delta_time_per_beat >> 8)
 	};
-	fwrite(&mthd_chunk, 1, 14, out);
+	if (fwrite(&mthd_chunk, 1, 14, out) != 14)
+	{
+		fclose(out);
+		throw -1;
+	}
 
 	//Write MIDI track data
 	//we use SMF-0 standard therefore there is only a single track :)
@@ -88,10 +93,18 @@ void MIDI::write(FILE *out)
 		// Again, swap endianness
 		(s << 24) | ((s & 0x0000ff00) << 8) | ((s & 0x00ff0000) >> 8) | (s >> 24)
 	};
-	fwrite(&trdata, 1, 8, out);
+	if (fwrite(&trdata, 1, 8, out) != 8)
+	{
+		fclose(out);
+		throw -1;
+	}
 
 	//Write the track itself
-	fwrite(&data[0], data.size(), 1, out);
+	if (fwrite(&data[0], data.size(), 1, out) != 1)
+	{
+		fclose(out);
+		throw -1;
+	}
 
 	fclose(out);
 }
