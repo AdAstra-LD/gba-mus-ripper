@@ -10,8 +10,29 @@
 #include <cmath>
 #include <cstdio>
 #include "hex_string.hpp"
+#include <algorithm>
 #include <vector>
 extern FILE *inGBA;					// Related .gba file
+
+void GBAInstr::register_instrument_table_boundaries(const inst_data *data, unsigned int count)
+{
+	std::vector<uint32_t> addresses;
+	for (unsigned int i = 0; i < count; ++i)
+	{
+		int type = data[i].word0 & 0xff;
+		if (type == 0x40 || type == 0x80)
+			addresses.push_back(data[i].word1 & 0x3ffffff);
+	}
+
+	std::sort(addresses.begin(), addresses.end());
+	addresses.erase(std::unique(addresses.begin(), addresses.end()), addresses.end());
+	for (unsigned int i = 0; i + 1 < addresses.size(); ++i)
+	{
+		uint32_t distance = addresses[i + 1] - addresses[i];
+		if (distance % 12 == 0 && distance / 12 < 128)
+			table_key_limits[addresses[i]] = distance / 12;
+	}
+}
 
 bool operator <(const inst_data&i, const inst_data& j)
 {
@@ -125,10 +146,13 @@ int GBAInstr::build_sampled_instrument(const inst_data inst)
 
 	// Get sample pointer
 	uint32_t sample_pointer = inst.word1 & 0x3ffffff;
+	int keynum = (inst.word0 >> 8) & 0xff;
 
-	// Determine if loop is enabled (it's dumb but we have to seek just for this)
+	// Determine if loop is enabled and read the sample pitch.
 	if (fseek(inGBA, sample_pointer|3, SEEK_SET)) throw -1;
 	bool loop_flag = fgetc(inGBA) == 0x40;
+	uint32_t pitch;
+	if (fread(&pitch, 4, 1, inGBA) != 1 || pitch == 0) throw -1;
 
 	// Build pointed sample
 	int sample_index = samples.build_sample(sample_pointer);
@@ -142,7 +166,21 @@ int GBAInstr::build_sampled_instrument(const inst_data inst)
 
 	// Add generator to prevent scaling if required
 	if (no_scale)
+	{
 		sf2->add_new_inst_generator(SFGenerator::scaleTuning, 0);
+		// The sample data is copied without resampling, but its SF2 header uses
+		// the requested export rate. Compensate type-8 instruments back to the
+		// rate stored in the GBA sample header.
+		double delta_note = 12.0 * log2(sf2->default_sample_rate * 1024.0 / pitch);
+		int rootkey = 60 + int(round(delta_note));
+		sf2->add_new_inst_generator(SFGenerator::coarseTune, uint16_t(60 - rootkey));
+	}
+	else
+	{
+		double delta_note = 12.0 * log2(sf2->default_sample_rate * 1024.0 / pitch);
+		int rootkey = 60 + int(round(delta_note));
+		sf2->add_new_inst_generator(SFGenerator::overridingRootKey, rootkey + keynum - 60);
+	}
 
 	generate_adsr_generators(inst.word2);
 	sf2->add_new_inst_generator(SFGenerator::sampleModes, loop_flag ? 1 : 0);
@@ -167,8 +205,12 @@ int GBAInstr::build_every_keysplit_instrument(const inst_data inst)
 	std::string name = "EveryKeySplit @0x" + hex(baseaddress);
 	sf2->add_new_instrument(name.c_str());
 
-	// Loop through all keys
-	for (int key = 0; key < 128; key ++)
+	// Loop through the keys that belong to this table. Some games place a
+	// shorter table immediately before another one instead of padding it to 128.
+	unsigned int key_count = 128;
+	std::map<uint32_t, unsigned int>::const_iterator limit = table_key_limits.find(baseaddress);
+	if (limit != table_key_limits.end()) key_count = limit->second;
+	for (unsigned int key = 0; key < key_count; key ++)
 	{
 		try
 		{
@@ -180,9 +222,6 @@ int GBAInstr::build_every_keysplit_instrument(const inst_data inst)
 			int keynum = fgetc(inGBA);			// Key (every key split instrument only)
 		/*  int unused_byte =*/ fgetc(inGBA);		// Unknown/unused byte
 			int panning = fgetc(inGBA);			// Panning (every key split instrument only)
-
-			// The flag is set if no scaling should be done on the sample
-			bool no_scale = false;
 
 			uint32_t main_word, adsr;
 			if (fread(&main_word, 4, 1, inGBA) != 1) throw -1;
@@ -196,7 +235,6 @@ int GBAInstr::build_every_keysplit_instrument(const inst_data inst)
 			switch (instrType & 0x0f)
 			{
 				case 8:
-					no_scale = true;
 				case 0:
 				{
 					// Determine if loop is enabled and read sample's pitch
@@ -214,16 +252,18 @@ int GBAInstr::build_every_keysplit_instrument(const inst_data inst)
 					sf2->add_new_inst_bag();
 					sf2->add_new_inst_generator(SFGenerator::keyRange, key, key);
 					generate_adsr_generators(adsr);
-					// Add generator to prevent scaling if required
-					if (no_scale)
-						sf2->add_new_inst_generator(SFGenerator::scaleTuning, 0);
-
 					// Compute base note and fine tune from pitch
 					double delta_note = 12.0 * log2(sf2->default_sample_rate * 1024.0 / pitch);
 					int rootkey = 60 + int(round(delta_note));
 
-					// Override root key with the value we need
-					sf2->add_new_inst_generator(SFGenerator::overridingRootKey, rootkey - keynum + key);
+					// A drum table's physical key selects the entry; keynum is the
+					// note at which MP2K plays a scaled sample. Move the SF2 root by
+					// the same key-keynum distance so the selected zone plays keynum.
+					// Type 8 ignores keynum and plays at the sample's native rate.
+					int zone_root = (instrType & 0x0f) == 8
+						? rootkey + key - 60
+						: rootkey - keynum + key;
+					sf2->add_new_inst_generator(SFGenerator::overridingRootKey, zone_root);
 					
 				}	break;
 
@@ -315,7 +355,7 @@ int GBAInstr::build_keysplit_instrument(const inst_data inst)
 			// but doing it all with flags would have been quite complex
 
 			int inst_type = fgetc(inGBA);		// Instrument type
-		 /* int keynum = */ fgetc(inGBA);		// Key (every key split instrument only)
+			int keynum = fgetc(inGBA);			// Base key
 		 /* int unused_byte = */ fgetc(inGBA);	// Unknown/unused byte
 		 /* int panning = */ fgetc(inGBA);		// Panning (every key split instrument only)
 
@@ -338,6 +378,8 @@ int GBAInstr::build_keysplit_instrument(const inst_data inst)
 			// Determine if loop is enabled (it's dumb but we have to seek just for this)
 			if (fseek(inGBA, sample_pointer|3, SEEK_SET)) throw -1;
 			bool loop_flag = fgetc(inGBA) == 0x40;
+			uint32_t pitch;
+			if (fread(&pitch, 4, 1, inGBA) != 1 || pitch == 0) throw -1;
 
 			// Build pointed sample
 			int sample_index = samples.build_sample(sample_pointer);
@@ -350,7 +392,18 @@ int GBAInstr::build_keysplit_instrument(const inst_data inst)
 
 			// Add generator to prevent scaling if required
 			if (no_scale)
+			{
 				sf2->add_new_inst_generator(SFGenerator::scaleTuning, 0);
+				double delta_note = 12.0 * log2(sf2->default_sample_rate * 1024.0 / pitch);
+				int rootkey = 60 + int(round(delta_note));
+				sf2->add_new_inst_generator(SFGenerator::coarseTune, uint16_t(60 - rootkey));
+			}
+			else
+			{
+				double delta_note = 12.0 * log2(sf2->default_sample_rate * 1024.0 / pitch);
+				int rootkey = 60 + int(round(delta_note));
+				sf2->add_new_inst_generator(SFGenerator::overridingRootKey, rootkey + keynum - 60);
+			}
 
 			generate_adsr_generators(adsr);
 			sf2->add_new_inst_generator(SFGenerator::sampleModes, loop_flag ? 1 : 0);

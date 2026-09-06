@@ -25,6 +25,7 @@ class GBAInstr
 {
 	int cur_inst_index;
 	std::map<inst_data, int> inst_map;	// Contains pointers to instruments within GBA file, their position is the # of instrument in the SF2
+	std::map<uint32_t, unsigned int> table_key_limits;	// Known lengths of adjacent key-split instrument tables
 	SF2 *sf2;										// Related .sf2 file
 	GBASamples samples;								// Related samples class
 
@@ -37,6 +38,9 @@ class GBAInstr
 public:
 	GBAInstr(SF2 *sf2) : cur_inst_index(0), sf2(sf2), samples(sf2)
 	{}
+
+	// Discover bounds for instrument tables referenced by a master voicegroup.
+	void register_instrument_table_boundaries(const inst_data *data, unsigned int count);
 
 	//Build a SF2 instrument form a GBA sampled instrument
 	int build_sampled_instrument(const inst_data inst);

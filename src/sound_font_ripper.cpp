@@ -613,6 +613,7 @@ int main(const int argc, char *const argv[])
 			fprintf(stderr, "Error: Invalid position within input GBA file: 0x%x\n", current_address);
 			exit(0);
 		}
+		instruments->register_instrument_table_boundaries(instr_data, ninstr);
 
 		// Decode all instruments
 		for (current_instrument = 0; current_instrument < ninstr; ++current_instrument, current_address += 12)
